@@ -1,52 +1,22 @@
 #!/bin/bash
 #
-# Prerequisite set-up script for a Drake build with Bazel on macOS or OS X.
+# Install development and runtime prerequisites for both binary and source
+# distributions of Drake on macOS.
 
-set -euo pipefail
+set -euxo pipefail
 
-if [[ $EUID -eq 0 ]]; then
-  echo "This script must NOT be run as root" >&2
-  exit 1
-fi
+# Dependencies that are installed by the following sourced script that are
+# needed when developing with binary distributions are also needed when
+# developing with source distributions.
 
-if ! command -v javac &>/dev/null; then
-  echo "Java is NOT installed" >&2
-  exit 2
-fi
+source "${BASH_SOURCE%/*}/binary_distribution/install_prereqs.sh"
 
-if ! command -v brew &>/dev/null; then
-  ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"
-fi
+# The following additional dependencies are only needed when developing with
+# source distributions.
 
-brew tap homebrew/science
-brew tap robotlocomotion/director
+source "${BASH_SOURCE%/*}/source_distribution/install_prereqs.sh"
 
-brew update
-brew upgrade
+# The preceding only needs to be run once per machine. The following sourced
+# script should be run once per user who develops with source distributions.
 
-brew install $(tr '\n' ' ' <<EOF
-bazel
-boost
-clang-format
-doxygen
-gcc
-glib
-libyaml
-numpy
-patchutils
-pkg-config
-python
-scipy
-tinyxml
-vtk@8.0
-EOF
-)
-
-pip2 install --upgrade $(tr '\n' ' ' <<EOF
-lxml
-pip
-pygame
-PyYAML
-Sphinx
-EOF
-)
+source "${BASH_SOURCE%/*}/source_distribution/install_prereqs_user_environment.sh"

@@ -1,0 +1,314 @@
+#pragma once
+
+#include "pybind11/pybind11.h"
+
+// N.B. Avoid including other headers, such as `pybind11/eigen.sh` or
+// `pybind11/functional.sh`, such that modules can opt-in to (and pay the cost
+// for) these binding capabilities.
+
+namespace drake {
+namespace pydrake {
+
+/** @defgroup python_bindings Python Bindings
+@ingroup technical_notes
+@brief Details on implementing python bindings for the C++ code.
+
+# Overview
+
+Drake uses [pybind11](http://pybind11.readthedocs.io/en/stable/) for binding
+its C++ API to Python.
+
+At present, a fork of `pybind11` is used which permits bindings matrices with
+`dtype=object`, passing `unique_ptr` objects, and prevents aliasing for Python
+classes derived from `pybind11` classes.
+
+## Module Organization
+
+The structure of the bindings generally follow the *directory structure*, not
+the namespace structure. As an example, if in C++  you do:
+
+    #include <drake/multibody/multibody_tree/multibody_plant/{header}.h>
+    using drake::multibody::multibody_plant::{symbol};
+
+then in Python you would do:
+
+    from pydrake.multibody.multibody_tree.multibody_plant import {symbol}
+
+Some (but not all) exceptions:
+
+- Some of `drake/common` is incorporated into `pydrake.util`. (This will be
+remedied in the future.)
+- `drake/multibody/rigid_body_tree.h` is actually contained in the module
+`pydrake.multibody.rigid_body_tree`.
+- `drake/solvers/mathematical_program.h` is actually contained in the module
+`pydrake.solvers.mathematicalprogram`.
+
+## `pybind11` Tips
+
+### Python Types
+
+Throughout the Drake code, Python types provided by `pybind11` are used, such
+as `py::handle`, `py::object`, `py::module`, `py::str`, `py::list`, etc.
+For an overview, see the
+[pybind11 reference](http://pybind11.readthedocs.io/en/stable/reference.html).
+
+All of these are effectively thin wrappers around `PyObject*`, and thus can be
+cheaply copied.
+
+Mutating the referred-to object also does not require passing by reference, so
+you can always pass the object by value for functions, but you should document
+your method if it mutates the object in a non-obvious fashion.
+
+### Python Type Conversions
+
+You can implicit convert between `py::object` and its derived classes (such
+as `py::list`, `py::class_`, etc.), assuming the actual Python types agree.
+You may also implicitly convert from `py::object` (and its derived classes) to
+`py::handle`.
+
+If you wish to convert a `py::handle` (or `PyObject*`) to `py::object` or a
+derived class, you should use
+[`py::reinterpret_borrow<>`](http://pybind11.readthedocs.io/en/stable/reference.html#_CPPv218reinterpret_borrow6handle).
+
+# Conventions
+
+## Target Conventions
+
+### Names
+
+- `*_py`: A Python library (can be pure Python or pybind)
+  - File Names: `*.py`, `*_py.cc`
+
+- `*_pybind`: A C++ library for adding pybind-specific utilities to be consumed
+  by C++.
+  - File Names: `*_pybind.{h,cc}`
+
+File names should follow form with their respective target.
+
+### Visibility
+
+- All Python libraries should generally be private, as `pydrake` will
+  be consumed as one encapsulated target.
+
+- All C++ `*_pybind` libraries for binding utilities should be public to aide
+  downstream Bazel projects. If the API is unstable, consider making it private
+  with a TODO to make public once it stabilizes.
+
+### Bazel
+
+Given that `libdrake.so` relies on static linking for components,
+any common headers should be robust against ODR violations. This can
+be normally achieved by using header-only libraries.
+
+For upstream dependencies of these libraries, do NOT depend on the direct
+targets (e.g. `//common:essential`), because this will introduce runtime ODR
+violations for objects that have static storage (UID counters, etc.).
+
+Instead, you must temporarily violate IWYU because it will be satisfied by
+`drake_pybind_library`, which will incorporate `libdrake.so` and the transitive
+headers.
+
+If singletons are required (e.g. for `util/cpp_param_pybind`), consider storing
+the singleton values using Python.
+
+If you are developing bindings for a small portion of Drake and would like to
+avoid rebuilding a large number of components when testing, consider editing
+`//tools/install/libdrake:build_components.bzl` to reduce the number of
+components being built.
+
+## pybind Module Definitions
+
+- Any Drake pybind module should include this header file, `pydrake_pybind.h`.
+- `PYBIND_MODULE` should be used to define modules.
+- Modules should be defined within the namespace `drake::pydrake`.
+- The alias `namespace py = pybind11` is defined as `drake::pydrake::py`. Drake
+modules should not re-define this alias at global scope.
+- If a certain namespace is being bound (e.g. `drake::systems::sensors`), you
+may use `using namespace drake::systems::sensors` within functions or
+anonymous namespaces. Avoid `using namespace` directives otherwise.
+
+## Documentation
+
+Drake uses a modified version of `mkdoc.py` from `pybind11`, where `libclang`
+Python bindings are used to generate C++ docstrings accessible to the C++
+binding code.
+
+An example of incorporating docstrings:
+
+    #include "drake/bindings/pydrake/documentation_pybind.h"
+
+    PYBIND11_MODULE(math, m) {
+      using namespace drake::math;
+      constexpr auto& doc = pydrake_doc.drake.math;
+      using T = double;
+      py::class_<RigidTransform<T>>(m, "RigidTransform", doc.RigidTransform.doc)
+          .def(py::init(), doc.ExampleClass.ctor.doc_3)
+          ...
+          .def(py::init<const RotationMatrix<T>&>(), py::arg("R"),
+               doc.RigidTransform.ctor.doc_5)
+          ...
+          .def("set_rotation", &RigidTransform<T>::set_rotation, py::arg("R"),
+               doc.RigidTransform.set_rotation.doc)
+      ...
+    }
+
+To see what indices are present, generate and open the docstring header:
+
+    bazel build //bindings/pydrake:generate_pybind_documentation_header
+    $EDITOR bazel-genfiles/bindings/pydrake/documentation_pybind.h
+
+You can search for the symbol you want, e.g.
+`drake::math::RigidTransform::RigidTransform<T>`, and view the include file
+and line corresponding to the symbol that the docstring was pulled from.
+
+@note This file may be large, on the order of ~100K lines; be sure to use an
+efficient editor!
+
+For more detail:
+
+- Each docstring is stored in `documentation_pybind.h` in the nested structure
+`pydrake_doc`.
+- The first docstring for a symbol will be accessible via
+`pydrake_doc.drake.{namespace...}.{symbol}.doc`.
+- Any additional docstrings (e.g. overloads) will be accessible as `.doc_2`,
+`.doc_3`, etc; these indices are sorted lexically, by `(include_file, line)`.
+- Constructors are accessible as `{symbol}.ctor.doc`, `{symbol}.ctor.doc_2`,
+etc.
+
+@note Macros are interpreted via `libclang` and could introduce more symbols.
+As an example, if a class uses `DRAKE_DEFAULT_COPY_AND_MOVE_AND_ASSIGN` at the
+the top of its definition, and then defines a custom constructor below this,
+the custom constructor's documentation will be accessible as
+`{symbol}.ctor.doc_3`.
+
+## Keep Alive Behavior
+
+`py::keep_alive` is used heavily throughout this code. For more
+information, please see [the pybind11 documentation](
+http://pybind11.readthedocs.io/en/stable/advanced/functions.html#keep-alive).
+
+Terse notes are added to method bindings to indicate the patient
+(object being kept alive by nurse) and the nurse (object keeping patient
+alive). To expand on them:
+- "Keep alive, ownership" implies that one argument is owned directly by
+one of the other arguments (`self` is included in those arguments, for
+`py::init<>` and class methods).
+- "Keep alive, reference" implies a reference that is lifetime-sensitive
+(something that is not necessarily owned by the other arguments).
+- "Keep alive, transitive" implies a transfer of ownership of owned
+objects from one container to another (e.g. transferring all `System`s
+from `DiagramBuilder` to `Diagram` when calling
+`DiagramBuilder.Build()`).
+
+## Function Overloads
+
+To bind function overloads, please try the following (in order):
+- `py::overload_cast<Args>(func)`: See [the pybind11 documentation](http://pybind11.readthedocs.io/en/stable/classes.html#overloaded-methods).
+This works about 80% of the time.
+- `pydrake::overload_cast_explicit<Return, Args...>(func)`: When
+`py::overload_cast` does not work (not always guaranteed to work).
+- `static_cast`, as mentioned in the pybind11 documentation.
+- Lambdas, e.g. `[](Args... args) -> auto&& { return func(args...); }`
+(using perfect forwarding when appropriate).
+
+## Python Subclassing of C++ Classes
+
+In general, minimize the amount in which users may subclass C++ classes in
+Python. When you do wish to do this, ensure that you use a trampoline class
+in `pybind`, and ensure that the trampoline class inherits from the
+`py::wrapper<>` class specific to our fork of `pybind`. This ensures that no
+slicing happens with the subclassed instances.
+
+## Convenience aliases
+
+Some aliases are provided; prefer these to the full spellings.
+
+`namespace py` is a shorthand alias to `pybind11` for consistency.
+
+@see py_reference, py_reference_internal for dealing with %common ownership
+     issues.
+
+@note Downstream users should avoid `using namespace drake::pydrake`, as
+this may create ambiguous aliases (especially for GCC). Instead, consider
+an alias.
+
+# Interactive Debugging with Bazel
+
+If you would like to interactively debug binding code (using IPython for
+general Python behavior, or GDB for C++ behavior), debug C++ behavior from a
+Python binary, while using Bazel, you may expose Bazel's development
+environment variables by adding these lines to your Python script:
+
+    import subprocess
+    subprocess.Popen(
+        "export -p | sed 's# PWD=# OLD_PWD=#g' | tee /tmp/env.sh",
+        shell=True)
+
+Run your target once from Bazel, and then source the generated `/tmp/env.sh` in
+your terminal to gain access to the environment variables (e.g. `$PYTHONPATH`).
+
+## Example with GDB
+
+This is a brief recipe for debugging with GDB
+(note the usage of subshell `(...)` to keep the variables scoped):
+
+    (
+        target=//bindings/pydrake/systems:lifetime_test
+        target_bin=$(echo ${target} | sed -e 's#//##' -e 's#:#/#')
+        bazel run -c dbg ${target}
+        workspace=$(bazel info workspace)
+        name=$(basename ${workspace})
+        cd ${workspace}/bazel-${name}
+        source /tmp/env.sh
+        gdb --args python ${workspace}/bazel-bin/${target_bin}
+    )
+
+This allows you to use GDB from the terminal, while being able to inspect the
+sources in Bazel's symlink forests.
+
+If using CLion, consider using `gdbserver`.
+
+*/
+
+// TODO(eric.cousineau): Add API naming conventions (#7819).
+
+// Note: Doxygen apparently doesn't process comments for namespace aliases. If
+// you put Doxygen comments here they will apply instead to py_reference. See
+// the "Convenience aliases" section above for documentation.
+namespace py = pybind11;
+
+/// Used when returning `T& or `const T&`, as pybind's default behavior is to
+/// copy lvalue references.
+const auto py_reference = py::return_value_policy::reference;
+
+/// Used when returning references to objects that are internally owned by
+/// `self`. Implies both `py_reference` and `py::keep_alive<0, 1>`, which
+/// implies "Keep alive, reference: `return` keeps` self` alive".
+const auto py_reference_internal =
+    py::return_value_policy::reference_internal;
+
+// Implementation for `overload_cast_explicit`. We must use this structure so
+// that we can constrain what is inferred. Otherwise, the ambiguity confuses
+// the compiler.
+template <typename Return, typename... Args>
+struct overload_cast_impl {
+  auto operator()(Return (*func)(Args...)) const { return func; }
+
+  template <typename Class>
+  auto operator()(Return (Class::*method)(Args...)) const {
+    return method;
+  }
+
+  template <typename Class>
+  auto operator()(Return (Class::*method)(Args...) const) const {
+    return method;
+  }
+};
+
+/// Provides option to provide explicit signature when
+/// `py::overload_cast<Args...>` fails to infer the Return argument.
+template <typename Return, typename... Args>
+constexpr auto overload_cast_explicit = overload_cast_impl<Return, Args...>{};
+
+}  // namespace pydrake
+}  // namespace drake

@@ -1,8 +1,0 @@
-element {
-    name: "position"
-    doc: "The along-curve position of the vehicle."
-}
-element {
-    name: "speed"
-    doc: "The along-curve speed of the vehicle."
-}

@@ -1,237 +1,375 @@
-cmake_minimum_required(VERSION 3.5)
-project(drake-superbuild VERSION 0.0.0)
+# -*- mode: cmake -*-
+# vi: set ft=cmake :
+
+cmake_minimum_required(VERSION 3.5.1)
+project(drake)
+
+list(INSERT CMAKE_MODULE_PATH 0 "${PROJECT_SOURCE_DIR}/cmake/modules")
 
 include(CTest)
 
-include(cmake/config.cmake)
-include(cmake/externals.cmake)
-include(cmake/options.cmake)
+configure_file(CTestCustom.cmake.in CTestCustom.cmake @ONLY)
 
-drake_setup_superbuild()
-drake_setup_platform()
-drake_setup_options()
-
-###############################################################################
-# BEGIN external projects
-
-# External projects in order of dependencies; 'trivial' ones first
-drake_add_external(qt_property_browser CMAKE QT)
-
-# eigen
-# N.B. See #5785; do your best not to have to bump this to a newer commit.
-drake_add_external(eigen PUBLIC CMAKE
-  URL https://bitbucket.org/eigen/eigen/get/3.3.3.tar.gz
-  URL_HASH SHA256=94878cbfa27b0d0fbc64c00d4aafa137f678d5315ae62ba4aecddbd4269ae75f
-  CMAKE_ARGS
-    -DEIGEN_TEST_NO_OPENGL=ON
-    -DEIGEN_TEST_NOQT=ON)
-
-# spdlog
-drake_add_external(spdlog PUBLIC CMAKE
-  DEPENDS fmt)
-
-# bullet
-drake_add_external(bullet PUBLIC CMAKE
-  CMAKE_ARGS
-    -DBUILD_SHARED_LIBS=ON
-    -DBUILD_BULLET2_DEMOS=OFF
-    -DBUILD_CPU_DEMOS=OFF
-    -DBUILD_EXTRAS=OFF
-    -DBUILD_OPENGL3_DEMOS=OFF
-    -DBUILD_UNIT_TESTS=OFF
-    -DCMAKE_DEBUG_POSTFIX=
-    -DCMAKE_MINSIZEREL_POSTFIX=
-    -DCMAKE_RELWITHDEBINFO_POSTFIX=
-    -DINSTALL_LIBS=ON
-    -DPKGCONFIG_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}/lib/pkgconfig
-    -DUSE_DOUBLE_PRECISION=ON)
-
-# fmt
-drake_add_external(fmt PUBLIC CMAKE ALWAYS
-  CMAKE_ARGS
-    -DFMT_DOC=OFF
-    -DFMT_TEST=OFF)
-
-# gflags
-drake_add_external(gflags PUBLIC CMAKE
-  CMAKE_ARGS
-    -DBUILD_SHARED_LIBS=ON
-    -DGFLAGS_BUILD_gflags_nothreads_LIB=OFF)
-
-# googletest
-drake_add_external(googletest PUBLIC CMAKE
-  CMAKE_ARGS
-    -DBUILD_SHARED_LIBS=ON
-    -DCMAKE_INSTALL_NAME_DIR=${CMAKE_INSTALL_PREFIX}/lib)
-
-# google_styleguide
-drake_add_external(google_styleguide PUBLIC PYTHON
-  BUILD_COMMAND :)
-
-# ipopt
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  # Work around horrific clang* = clang, */cl* = msvc bug in BuildTools/coin.m4
-  get_filename_component(IPOPT_C_COMPILER "${CMAKE_C_COMPILER}" NAME)
-  get_filename_component(IPOPT_CXX_COMPILER "${CMAKE_CXX_COMPILER}" NAME)
-else()
-  set(IPOPT_C_COMPILER "${CMAKE_C_COMPILER}")
-  set(IPOPT_CXX_COMPILER "${CMAKE_CXX_COMPILER}")
+if(CYGWIN OR NOT UNIX)
+  message(FATAL_ERROR "Cygwin and non-Unix platforms are NOT supported")
 endif()
 
-drake_add_external(ipopt PUBLIC AUTOTOOLS FORTRAN
-  AUTOTOOLS_ENV
-    CC=${IPOPT_C_COMPILER}
-    CXX=${IPOPT_CXX_COMPILER}
-  AUTOTOOLS_CONFIGURE_ARGS
-    --disable-shared
-    --includedir=${CMAKE_INSTALL_PREFIX}/include/ipopt
-    --with-blas=BUILD
-    --with-lapack=BUILD
-    --with-pic)
+set(UNIX_DISTRIBUTION_ID)
+set(UNIX_DISTRIBUTION_RELEASE)
 
-# nlopt
-drake_add_external(nlopt PUBLIC CMAKE
-  CMAKE_ARGS
-    -DBUILD_SHARED_LIBS=ON
-    -DBUILD_PYTHON=OFF
-    -DBUILD_OCTAVE=OFF
-    -DBUILD_MATLAB=OFF
-    -DBUILD_GUILE=OFF
-    -DINSTALL_INCLUDE_DIR=${CMAKE_INSTALL_PREFIX}/include/nlopt
-    -DUSE_SWIG=OFF)
+if(UNIX AND NOT APPLE)
+  find_program(LSB_RELEASE_EXECUTABLE NAMES lsb_release)
 
-# protobuf
-drake_add_external(protobuf PUBLIC CMAKE ALWAYS
-  SOURCE_SUBDIR cmake
-  CMAKE_ARGS
-    -DBUILD_SHARED_LIBS=ON
-    -Dprotobuf_BUILD_TESTS=OFF
-    -Dprotobuf_MODULE_COMPATIBLE=ON)
+  if(NOT LSB_RELEASE_EXECUTABLE)
+    message(FATAL_ERROR "Could NOT find the lsb_release executable")
+  endif()
 
-# pybind11
-drake_add_external(pybind11 CMAKE
-  CMAKE_ARGS
-    -DPYBIND11_PYTHON_VERSION=${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR}
-    -DPYBIND11_TEST=OFF)
-
-# pythonqt
-drake_add_external(pythonqt CMAKE PYTHON QT
-  CMAKE_ARGS
-    -DPythonQt_Wrap_Qtcore:BOOL=ON
-    -DPythonQt_Wrap_Qtgui:BOOL=ON
-    -DPythonQt_Wrap_Qtuitools:BOOL=ON
-)
-
-# tinyobjloader
-drake_add_external(tinyobjloader PUBLIC CMAKE
-  CMAKE_ARGS
-    -DTINYOBJLOADER_COMPILATION_SHARED=ON
+  execute_process(COMMAND "${LSB_RELEASE_EXECUTABLE}" --id --short
+    RESULT_VARIABLE LSB_RELEASE_ID_SHORT_RESULT_VARIABLE
+    OUTPUT_VARIABLE LSB_RELEASE_ID_SHORT_OUTPUT_VARIABLE
+    OUTPUT_STRIP_TRAILING_WHITESPACE
   )
 
-# yaml_cpp
-drake_add_external(yaml_cpp PUBLIC CMAKE
- CMAKE_ARGS
-   -DBUILD_SHARED_LIBS=ON
-   -DYAML_CPP_BUILD_CONTRIB=OFF
-   -DYAML_CPP_BUILD_TOOLS=OFF)
+  if(LSB_RELEASE_ID_SHORT_RESULT_VARIABLE EQUAL 0)
+    set(UNIX_DISTRIBUTION_ID "${LSB_RELEASE_ID_SHORT_OUTPUT_VARIABLE}")
+  endif()
 
-# ctk_python_console
-drake_add_external(ctk_python_console CMAKE PYTHON QT
-  DEPENDS pythonqt)
+  if(NOT UNIX_DISTRIBUTION_ID STREQUAL Ubuntu)
+     message(FATAL_ERROR
+       "Distribution ${UNIX_DISTRIBUTION_ID} is NOT supported"
+     )
+  endif()
 
-# lcm
-drake_add_external(lcm PUBLIC CMAKE PYTHON
-  CMAKE_ARGS
-    -DBUILD_SHARED_LIBS=ON
-    -DLCM_ENABLE_EXAMPLES=OFF
-    -DLCM_ENABLE_LUA=OFF
-    -DLCM_ENABLE_TESTS=OFF
-    -DLCM_INSTALL_M4MACROS=OFF)
+  string(TOLOWER "${UNIX_DISTRIBUTION_ID}" UNIX_DISTRIBUTION_ID)
 
-# libbot
-drake_add_external(libbot PUBLIC CMAKE PYTHON
-  DEPENDS lcm)
+  execute_process(COMMAND "${LSB_RELEASE_EXECUTABLE}" --release --short
+    RESULT_VARIABLE LSB_RELEASE_RELEASE_SHORT_RESULT_VARIABLE
+    OUTPUT_VARIABLE LSB_RELEASE_RELEASE_SHORT_OUTPUT_VARIABLE
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
 
-# bot_core_lcmtypes
-drake_add_external(bot_core_lcmtypes PUBLIC CMAKE PYTHON
-  DEPENDS lcm libbot) # Conflicts with libbot; ensure this is built after
+  if(LSB_RELEASE_RELEASE_SHORT_RESULT_VARIABLE EQUAL 0)
+    set(UNIX_DISTRIBUTION_RELEASE
+      "${LSB_RELEASE_RELEASE_SHORT_OUTPUT_VARIABLE}"
+    )
+  endif()
 
-# robotlocomotion_lcmtypes
-drake_add_external(robotlocomotion_lcmtypes PUBLIC CMAKE PYTHON
-  DEPENDS bot_core_lcmtypes lcm)
+  # The supported releases should match those listed in both doc/developers.rst
+  # and tools/workspace/os.bzl.
+  if(NOT UNIX_DISTRIBUTION_RELEASE MATCHES "^(16.04|18.04)$")
+     message(FATAL_ERROR
+       "Release ${UNIX_DISTRIBUTION_RELEASE} is NOT supported"
+     )
+  endif()
+endif()
 
-# Option to skip building drake proper via the superbuild. This allows the
-# superbuild to build everything BUT drake, which can still be built separately
-# from its build directory. This is used by the dashboards to make separate
-# submissions for drake proper and the superbuild without drake. Some users may
-# also find it useful, especially to build drake with ninja using fewer than
-# the default number of jobs.
-option(SKIP_DRAKE_BUILD "Build external projects but not drake itself" OFF)
+# The version passed to find_package(Bazel) should match the
+# minimum_bazel_version value in the call to versions.check() in WORKSPACE.
+set(MINIMUM_BAZEL_VERSION 0.16.1)
+find_package(Bazel ${MINIMUM_BAZEL_VERSION} MODULE REQUIRED)
 
-# drake: For drake, list both compilation AND RUNTIME dependencies. Runtime
-# dependencies are needed because the drake project must configure only after
-# any dependencies used by MATLAB have been installed.
-# TODO: re-add TEST to drake flags when subprojects arrive
-drake_add_external(drake LOCAL PUBLIC CMAKE ALWAYS MATLAB PYTHON VTK
-  SOURCE_DIR ${PROJECT_SOURCE_DIR}/drake
-  BINARY_DIR ${PROJECT_BINARY_DIR}/drake
-  CMAKE_ARGS
-    -DDISABLE_MATLAB:BOOL=${DISABLE_MATLAB}
-    -DDISABLE_PYTHON:BOOL=${DISABLE_PYTHON}
-    -DDISABLE_FORTRAN:BOOL=${DISABLE_FORTRAN}
-    -DWITH_BOT_CORE_LCMTYPES:BOOL=${WITH_BOT_CORE_LCMTYPES}
-    -DWITH_BULLET:BOOL=${WITH_BULLET}
-    -DWITH_EIGEN3:BOOL=${WITH_EIGEN}  # TODO(jamiesnape): Fix naming inconsistency
-    -DWITH_GFLAGS:BOOL=${WITH_GFLAGS}
-    -DWITH_GOOGLE_STYLEGUIDE:BOOL=${WITH_GOOGLE_STYLEGUIDE}
-    -DWITH_GTEST:BOOL=${WITH_GOOGLETEST}  # TODO(jamiesnape): Fix naming inconsistency
-    -DWITH_IPOPT:BOOL=${WITH_IPOPT}
-    -DWITH_LCM:BOOL=${WITH_LCM}
-    -DWITH_LIBBOT:BOOL=${WITH_LIBBOT}
-    -DWITH_NLOPT:BOOL=${WITH_NLOPT}
-    -DWITH_PROTOBUF:BOOL=${WITH_PROTOBUF}
-    -DWITH_PYBIND11:BOOL=${WITH_PYBIND11}
-    -DWITH_PYTHON_3:BOOL=${WITH_PYTHON_3}
-    -DWITH_SPDLOG:BOOL=${WITH_SPDLOG}
-    -DWITH_TINYOBJLOADER:BOOL=${WITH_TINYOBJLOADER}
-    -DWITH_YAML_CPP:BOOL=${WITH_YAML_CPP}
-  DEPENDS
-    bot_core_lcmtypes
-    bullet
-    eigen
-    fmt
-    gflags
-    google_styleguide
-    googletest
-    ipopt
-    lcm
-    libbot
-    nlopt
-    protobuf
-    pybind11
-    robotlocomotion_lcmtypes
-    spdlog
-    tinyobjloader
-    yaml_cpp
+get_filename_component(C_COMPILER_REALPATH "${CMAKE_C_COMPILER}" REALPATH)
+get_filename_component(C_COMPILER_NAME "${C_COMPILER_REALPATH}" NAME)
+
+get_filename_component(CXX_COMPILER_REALPATH "${CMAKE_CXX_COMPILER}" REALPATH)
+get_filename_component(CXX_COMPILER_NAME "${CXX_COMPILER_REALPATH}" NAME)
+
+if(C_COMPILER_NAME STREQUAL ccache OR CXX_COMPILER_NAME STREQUAL ccache)
+  message(FATAL_ERROR
+    "Compilation with ccache is NOT supported due to incompatibility with Bazel"
+  )
+endif()
+
+# The minimum compiler versions should match those listed in both
+# doc/developers.rst and tools/workspace/cc/repository.bzl.
+set(MINIMUM_APPLE_CLANG_VERSION 10)
+set(MINIMUM_CLANG_VERSION 6)
+set(MINIMUM_GNU_VERSION 5.4)
+
+if(CMAKE_C_COMPILER_ID STREQUAL AppleClang)
+  if(CMAKE_C_COMPILER_VERSION VERSION_LESS ${MINIMUM_APPLE_CLANG_VERSION})
+    message(FATAL_ERROR
+      "Compilation with clang ${CMAKE_C_COMPILER_VERSION} is NOT supported"
+    )
+  endif()
+elseif(CMAKE_C_COMPILER_ID STREQUAL Clang)
+  if(CMAKE_C_COMPILER_VERSION VERSION_LESS ${MINIMUM_CLANG_VERSION})
+    message(FATAL_ERROR
+      "Compilation with clang ${CMAKE_C_COMPILER_VERSION} is NOT supported"
+    )
+  endif()
+elseif(CMAKE_C_COMPILER_ID STREQUAL GNU)
+  if(CMAKE_C_COMPILER_VERSION VERSION_LESS ${MINIMUM_GNU_VERSION})
+    message(FATAL_ERROR
+      "Compilation with gcc ${CMAKE_C_COMPILER_VERSION} is NOT supported"
+    )
+  endif()
+else()
+  message(WARNING
+    "Compilation with ${CMAKE_C_COMPILER_ID} is NOT supported. Compilation of project drake_cxx_python may fail."
+  )
+endif()
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL AppleClang)
+  if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS ${MINIMUM_APPLE_CLANG_VERSION})
+    message(FATAL_ERROR
+      "Compilation with clang++ ${CMAKE_CXX_COMPILER_VERSION} is NOT supported"
+    )
+  endif()
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL Clang)
+  if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS ${MINIMUM_CLANG_VERSION})
+    message(FATAL_ERROR
+      "Compilation with clang++ ${CMAKE_CXX_COMPILER_VERSION} is NOT supported"
+    )
+  endif()
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL GNU)
+  if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS ${MINIMUM_GNU_VERSION})
+    message(FATAL_ERROR
+      "Compilation with g++ ${CMAKE_CXX_COMPILER_VERSION} is NOT supported"
+    )
+  endif()
+else()
+  # Check flag added in tools/cc_toolchain/bazel.rc is supported.
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag(-std=c++14 CXX_COMPILER_SUPPORTS_FLAG_STD_CXX14)
+  if(NOT CXX_COMPILER_SUPPORTS_FLAG_STD_CXX14)
+    message(FATAL_ERROR
+      "Compilation with ${CMAKE_CXX_COMPILER_ID} is NOT supported because it does not accept the -std=c++14 flag"
+    )
+  endif()
+  message(WARNING
+    "Compilation with ${CMAKE_CXX_COMPILER_ID} is NOT supported. Compilation of project drake_cxx_python may fail."
+  )
+endif()
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING
+    "Choose the type of build, options are None Debug Release RelWithDebInfo MinSizeRel"
+    FORCE
+  )
+  set_property(CACHE CMAKE_BUILD_TYPE PROPERTY
+    STRINGS None Debug Release RelWithDebInfo MinSizeRel
+  )
+endif()
+
+if(APPLE)
+  # Ensure that the python2 executable or link is used in preference to the
+  # python and python2.7 executables or links.
+  find_program(PYTHON_EXECUTABLE NAMES python2)
+endif()
+
+find_package(PythonInterp 2.7 EXACT MODULE REQUIRED)
+
+if(CMAKE_BUILD_TYPE STREQUAL Debug)
+  set(BAZEL_COMPILATION_MODE dbg)
+else()
+  set(BAZEL_COMPILATION_MODE opt)
+endif()
+
+set(BAZEL_ENV)
+
+if(NOT APPLE)
+  list(APPEND BAZEL_ENV
+    "CC=${CMAKE_C_COMPILER}"
+    "CXX=${CMAKE_CXX_COMPILER}"
+  )
+endif()
+
+get_filename_component(PROJECT_BINARY_DIR_REALPATH
+  "${PROJECT_BINARY_DIR}" REALPATH
+)
+get_filename_component(PROJECT_SOURCE_DIR_REALPATH
+  "${PROJECT_SOURCE_DIR}" REALPATH
 )
 
-# director
-drake_add_external(director PUBLIC CMAKE TEST PYTHON QT VTK
-  CMAKE_ARGS
-    -DENABLE_TESTING=ON
-    -DUSE_DRAKE=ON
-    -DUSE_LCM=${HAVE_LCM}
-    -DUSE_LCMGL=${HAVE_LIBBOT}
-    -DUSE_LIBBOT=OFF
-  DEPENDS
-    bot_core_lcmtypes
-    ctk_python_console
-    drake
-    lcm
-    libbot
-    pythonqt
-    qt_property_browser
+# Check whether the PROJECT_BINARY_DIR is a subdirectory of the
+# PROJECT_SOURCE_DIR.
+string(FIND "${PROJECT_BINARY_DIR_REALPATH}/" "${PROJECT_SOURCE_DIR_REALPATH}/"
+  STRING_FIND_RESULT_VARIABLE
 )
 
-# END external projects
-###############################################################################
+if(STRING_FIND_RESULT_VARIABLE EQUAL 0)
+  # The --output_base cannot be within the WORKSPACE (a subdirectory of
+  # PROJECT_SOURCE_DIR), so fallback to the using the same parent directory
+  # that bazel uses by default for its --output_base.
+  if(APPLE)
+    set(BAZEL_OUTPUT_BASE "/var/tmp")
+  else()
+    set(BAZEL_OUTPUT_BASE "$ENV{HOME}/.cache/bazel")
+  endif()
+else()
+  set(BAZEL_OUTPUT_BASE "${PROJECT_BINARY_DIR}")
+endif()
+
+# Compute the MD5 of the PROJECT_BINARY_DIR rather than the WORKSPACE
+# (PROJECT_SOURCE_DIR) to avoid colliding with the directory that bazel uses by
+# default.
+string(MD5 PROJECT_BINARY_DIR_MD5 "${PROJECT_BINARY_DIR_REALPATH}")
+set(BAZEL_OUTPUT_BASE
+  "${BAZEL_OUTPUT_BASE}/_bazel_$ENV{USER}/${PROJECT_BINARY_DIR_MD5}"
+)
+
+configure_file(cmake/bazel.rc.in bazel.rc @ONLY)
+
+set(BAZEL_STARTUP_ARGS "--bazelrc=${CMAKE_CURRENT_BINARY_DIR}/bazel.rc")
+
+set(BAZEL_ARGS)
+
+if(CMAKE_VERBOSE_MAKEFILE)
+  list(APPEND BAZEL_ARGS --subcommands)
+endif()
+
+option(WITH_GUROBI "Build with support for Gurobi" OFF)
+
+if(WITH_GUROBI)
+  find_package(Gurobi 8.0.0 MODULE REQUIRED)
+
+  list(APPEND BAZEL_ARGS --config=gurobi)
+
+  if(NOT APPLE)
+    get_filename_component(GUROBI_PATH "${Gurobi_INCLUDE_DIRS}" DIRECTORY)
+    list(APPEND BAZEL_ENV "GUROBI_PATH=${GUROBI_PATH}")
+  endif()
+endif()
+
+option(WITH_MATLAB "Build with support for MATLAB" OFF)
+
+if(WITH_MATLAB)
+  list(APPEND BAZEL_ARGS
+    --define=NO_IPOPT=ON
+    --define=NO_OSQP=ON
+  )
+endif()
+
+option(WITH_MOSEK "Build with support for MOSEK" OFF)
+
+if(WITH_MOSEK)
+  list(APPEND BAZEL_ARGS --config=mosek)
+endif()
+
+option(WITH_ROBOTLOCOMOTION_SNOPT "Build with support for SNOPT using the RobotLocomotion/snopt private GitHub repository" OFF)
+option(WITH_SNOPT "Build with support for SNOPT using the SNOPT source archive at SNOPT_PATH" OFF)
+
+if(WITH_ROBOTLOCOMOTION_SNOPT AND WITH_SNOPT)
+  message(FATAL_ERROR
+    "WITH_SNOPT and WITH_ROBOTLOCOMOTION_SNOPT are mutually exclusive")
+elseif(WITH_ROBOTLOCOMOTION_SNOPT)
+  list(APPEND BAZEL_ARGS --config=snopt)
+  list(APPEND BAZEL_ENV "SNOPT_PATH=git")
+elseif(WITH_SNOPT)
+  list(APPEND BAZEL_ARGS --config=snopt)
+  set(SNOPT_PATH SNOPT_PATH-NOTFOUND CACHE FILEPATH "Path to SNOPT source archive")
+  if(NOT EXISTS "${SNOPT_PATH}")
+    message(FATAL_ERROR "SNOPT source archive was NOT found at '${SNOPT_PATH}'")
+  endif()
+  mark_as_advanced(SNOPT_PATH)
+  list(APPEND BAZEL_ENV "SNOPT_PATH=${SNOPT_PATH}")
+endif()
+
+set(BAZEL_TARGETS //:install)
+
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+  set(CMAKE_INSTALL_PREFIX "${PROJECT_BINARY_DIR}/install" CACHE STRING
+    "Install path prefix, prepended onto install directories" FORCE
+  )
+endif()
+
+include(ExternalProject)
+
+ExternalProject_Add(drake_cxx_python
+  SOURCE_DIR "${PROJECT_SOURCE_DIR}"
+  CONFIGURE_COMMAND :
+  BUILD_COMMAND ${BAZEL_ENV} "${Bazel_EXECUTABLE}" ${BAZEL_STARTUP_ARGS} build ${BAZEL_ARGS} ${BAZEL_TARGETS}
+  BUILD_IN_SOURCE 1
+  BUILD_ALWAYS 1
+  INSTALL_COMMAND ${BAZEL_ENV} "${Bazel_EXECUTABLE}" ${BAZEL_STARTUP_ARGS} run ${BAZEL_ARGS} ${BAZEL_TARGETS} -- "${CMAKE_INSTALL_PREFIX}"
+  USES_TERMINAL_BUILD 1
+  USES_TERMINAL_INSTALL 1
+)
+
+set(GIT_DIR "${PROJECT_SOURCE_DIR}/.git")
+set(GIT_REVISION HEAD)
+
+find_package(Git)
+
+if(GIT_FOUND AND EXISTS "${GIT_DIR}")
+  execute_process(COMMAND "${GIT_EXECUTABLE}" "--git-dir=${GIT_DIR}" rev-parse HEAD
+    RESULT_VARIABLE GIT_REV_PARSE_RESULT_VARIABLE
+    OUTPUT_VARIABLE GIT_REV_PARSE_OUTPUT_VARIABLE
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+
+  if(GIT_REV_PARSE_RESULT_VARIABLE EQUAL 0)
+    set(GIT_REVISION "${GIT_REV_PARSE_OUTPUT_VARIABLE}")
+  endif()
+endif()
+
+string(TIMESTAMP BUILD_TIMESTAMP "%Y%m%d%H%M%S")
+
+configure_file(tools/install/libdrake/VERSION.TXT.in VERSION.TXT @ONLY)
+
+install(FILES "${PROJECT_BINARY_DIR}/VERSION.TXT" DESTINATION share/doc/drake)
+
+list(APPEND CMAKE_PREFIX_PATH "${CMAKE_INSTALL_PREFIX}")
+
+if(WITH_MATLAB)
+  ExternalProject_Add(drake_matlab
+    DEPENDS drake_cxx_python
+    SOURCE_DIR "${PROJECT_SOURCE_DIR}/matlab"
+    CMAKE_ARGS
+      -DBUILD_TESTING:BOOL=${BUILD_TESTING}
+      -DCMAKE_BUILD_TYPE:STRING=${CMAKE_BUILD_TYPE}
+      "-DCMAKE_CXX_COMPILER:FILEPATH=${CMAKE_CXX_COMPILER}"
+      "-DCMAKE_CXX_FLAGS:STRING=${CMAKE_CXX_FLAGS}"
+      "-DCMAKE_INSTALL_PREFIX:PATH=${CMAKE_INSTALL_PREFIX}"
+      "-DCMAKE_PREFIX_PATH:PATH=${CMAKE_PREFIX_PATH}"
+      "-DCMAKE_SHARED_LINKER_FLAGS:STRING=${CMAKE_SHARED_LINKER_FLAGS}"
+      -DCMAKE_VERBOSE_MAKEFILE:BOOL=${CMAKE_VERBOSE_MAKEFILE}
+    BINARY_DIR "${PROJECT_BINARY_DIR}/drake_matlab-build"
+    BUILD_ALWAYS 1
+  )
+endif()
+
+set(CPACK_GENERATOR TGZ)
+set(CPACK_INSTALLED_DIRECTORIES "${CMAKE_INSTALL_PREFIX}" .)
+set(CPACK_PACKAGE_CONTACT RobotLocomotion)
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+  "Planning, control, and analysis toolbox for nonlinear dynamical systems"
+)
+set(CPACK_PACKAGE_VENDOR RobotLocomotion)
+set(CPACK_PACKAGE_VERSION_MAJOR 0)
+set(CPACK_PACKAGE_VERSION_MINOR 0)
+set(CPACK_PACKAGE_VERSION_PATCH 0)
+set(CPACK_PACKAGE_CHECKSUM SHA256)
+set(CPACK_SET_DESTDIR ON)
+set(CPACK_SOURCE_GENERATOR "")
+
+if(APPLE)
+  set(CPACK_SYSTEM_NAME mac)
+else()
+  string(TOLOWER "${CMAKE_SYSTEM_NAME}" CPACK_SYSTEM_NAME)
+
+  list(APPEND CPACK_GENERATOR DEB)
+
+  set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+  set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION ON)
+  set(CPACK_DEBIAN_PACKAGE_HOMEPAGE https://drake.mit.edu/)
+  set(CPACK_DEBIAN_PACKAGE_RELEASE 1)
+  set(CPACK_DEBIAN_PACKAGE_SECTION contrib/devel)
+
+  file(STRINGS "setup/${UNIX_DISTRIBUTION_ID}/${UNIX_DISTRIBUTION_RELEASE}/binary_distribution/packages.txt"
+    CPACK_DEBIAN_PACKAGE_DEPENDS
+  )
+  string(REGEX REPLACE "([a-z0-9\\-]+)=([a-z0-9\\-\\.~]+)" "\\1 (= \\2)"
+    CPACK_DEBIAN_PACKAGE_DEPENDS "${CPACK_DEBIAN_PACKAGE_DEPENDS}"
+  )
+  string(REPLACE ";" ", " CPACK_DEBIAN_PACKAGE_DEPENDS
+    "${CPACK_DEBIAN_PACKAGE_DEPENDS}"
+  )
+endif()
+
+set(CPACK_PACKAGE_FILE_NAME
+  "${PROJECT_NAME}-${BUILD_TIMESTAMP}-${CPACK_SYSTEM_NAME}"
+)
+
+include(CPack)
